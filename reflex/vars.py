@@ -22,6 +22,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Sequence,
     Tuple,
     Type,
     Union,
@@ -34,10 +35,10 @@ from typing import (
 
 from reflex import constants
 from reflex.base import Base
-from reflex.utils import console, format, imports, serializers, types
+from reflex.utils import console, format, serializers, types
 
 # This module used to export ImportVar itself, so we still import it for export here
-from reflex.utils.imports import ImportDict, ImportVar
+from reflex.utils.imports import ImportDict, ImportList, ImportVar
 
 if TYPE_CHECKING:
     from reflex.state import BaseState
@@ -116,7 +117,7 @@ class VarData(Base):
     state: str = ""
 
     # Imports needed to render this var
-    imports: ImportDict = {}
+    imports: ImportList = ImportList()
 
     # Hooks that need to be present in the component to render this var
     hooks: Dict[str, None] = {}
@@ -125,6 +126,39 @@ class VarData(Base):
     # out where the interpolations are and only escape the non-interpolated
     # segments.
     interpolations: List[Tuple[int, int]] = []
+
+    def __init__(
+        self,
+        imports: ImportList
+        | Sequence[ImportVar | Dict[str, Optional[Union[str, bool]]]]
+        | ImportDict
+        | Dict[str, set[ImportVar]]
+        | None = None,
+        **kwargs,
+    ):
+        """Initialize the VarData.
+
+        If imports is an ImportDict it will be converted to an ImportList and a
+        deprecation warning will be displayed.
+
+        Args:
+            imports: The imports needed to render this var.
+            **kwargs: Additional fields to set.
+        """
+        if isinstance(imports, dict):
+            imports = ImportList.from_import_dict(imports)
+            console.deprecate(
+                feature_name="Passing ImportDict for VarData",
+                reason="use ImportList instead",
+                deprecation_version="0.5.0",
+                removal_version="0.6.0",
+            )
+        else:
+            imports = ImportList(imports or [])
+        super().__init__(
+            imports=imports,  # type: ignore
+            **kwargs,
+        )
 
     @classmethod
     def merge(cls, *others: VarData | None) -> VarData | None:
@@ -137,14 +171,14 @@ class VarData(Base):
             The merged var data object.
         """
         state = ""
-        _imports = {}
+        _imports = ImportList()
         hooks = {}
         interpolations = []
         for var_data in others:
             if var_data is None:
                 continue
             state = state or var_data.state
-            _imports = imports.merge_imports(_imports, var_data.imports)
+            _imports.extend(var_data.imports)
             hooks.update(var_data.hooks)
             interpolations += var_data.interpolations
 
@@ -180,11 +214,18 @@ class VarData(Base):
 
         # Don't compare interpolations - that's added in by the decoder, and
         # not part of the vardata itself.
+        if not isinstance(self.imports, ImportList):
+            self_imports = ImportList(self.imports).collapse()
+        else:
+            self_imports = self.imports.collapse()
+        if not isinstance(other.imports, ImportList):
+            other_imports = ImportList(other.imports).collapse()
+        else:
+            other_imports = other.imports.collapse()
         return (
             self.state == other.state
             and self.hooks.keys() == other.hooks.keys()
-            and imports.collapse_imports(self.imports)
-            == imports.collapse_imports(other.imports)
+            and self_imports == other_imports
         )
 
     def dict(self) -> dict:
@@ -196,10 +237,7 @@ class VarData(Base):
         return {
             "state": self.state,
             "interpolations": list(self.interpolations),
-            "imports": {
-                lib: [import_var.dict() for import_var in import_vars]
-                for lib, import_vars in self.imports.items()
-            },
+            "imports": [import_var.dict() for import_var in self.imports],
             "hooks": self.hooks,
         }
 
@@ -1042,11 +1080,12 @@ class Var:
                 ",", other, fn="spreadArraysOrObjects", flip=flip
             )._replace(
                 merge_var_data=VarData(
-                    imports={
-                        f"/{constants.Dirs.STATE_PATH}": [
-                            ImportVar(tag="spreadArraysOrObjects")
-                        ]
-                    },
+                    imports=[
+                        ImportVar(
+                            package=f"/{constants.Dirs.STATE_PATH}",
+                            tag="spreadArraysOrObjects",
+                        ),
+                    ],
                 ),
             )
         return self.operation("+", other, flip=flip)
@@ -1595,11 +1634,11 @@ class Var:
                 v2._var_data,
                 step._var_data,
                 VarData(
-                    imports={
-                        "/utils/helpers/range.js": [
-                            ImportVar(tag="range", is_default=True),
-                        ],
-                    },
+                    imports=[
+                        ImportVar(
+                            package="/utils/helpers/range", tag="range", is_default=True
+                        ),
+                    ]
                 ),
             ),
         )
@@ -1627,9 +1666,9 @@ class Var:
             _var_is_string=False,
             _var_full_name_needs_state_prefix=False,
             merge_var_data=VarData(
-                imports={
-                    f"/{constants.Dirs.STATE_PATH}": [imports.ImportVar(tag="refs")],
-                },
+                imports=[
+                    ImportVar(package=f"/{constants.Dirs.STATE_PATH}", tag="refs")
+                ],
             ),
         )
 
@@ -1667,10 +1706,14 @@ class Var:
                     format.format_state_name(state_name)
                 ): None
             },
-            imports={
-                f"/{constants.Dirs.CONTEXTS_PATH}": [ImportVar(tag="StateContexts")],
-                "react": [ImportVar(tag="useContext")],
-            },
+            imports=ImportList(
+                [
+                    ImportVar(
+                        package=f"/{constants.Dirs.CONTEXTS_PATH}", tag="StateContexts"
+                    ),
+                    ImportVar(package="react", tag="useContext"),
+                ]
+            ),
         )
         self._var_data = VarData.merge(self._var_data, new_var_data)
         self._var_full_name_needs_state_prefix = True

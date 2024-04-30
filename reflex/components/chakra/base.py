@@ -35,19 +35,18 @@ class ChakraComponent(Component):
 
     @classmethod
     @lru_cache(maxsize=None)
-    def _get_dependencies_imports(cls) -> imports.ImportDict:
+    def _get_dependencies_imports(cls) -> List[imports.ImportVar]:
         """Get the imports from lib_dependencies for installing.
 
         Returns:
             The dependencies imports of the component.
         """
-        return {
-            dep: [imports.ImportVar(tag=None, render=False)]
-            for dep in [
-                "@chakra-ui/system@2.5.7",
-                "framer-motion@10.16.4",
-            ]
-        }
+        return [
+            imports.ImportVar(
+                package="@chakra-ui/system@2.5.7", tag=None, render=False
+            ),
+            imports.ImportVar(package="framer-motion@10.16.4", tag=None, render=False),
+        ]
 
 
 class ChakraProvider(ChakraComponent):
@@ -68,13 +67,21 @@ class ChakraProvider(ChakraComponent):
             theme=Var.create("extendTheme(theme)", _var_is_local=False),
         )
 
-    def _get_imports(self) -> imports.ImportDict:
-        _imports = super()._get_imports()
-        _imports.setdefault(self.__fields__["library"].default, []).append(
-            imports.ImportVar(tag="extendTheme", is_default=False),
-        )
-        _imports.setdefault("/utils/theme.js", []).append(
-            imports.ImportVar(tag="theme", is_default=True),
+    def _get_imports_list(self) -> List[imports.ImportVar]:
+        _imports = super()._get_imports_list()
+        _imports.extend(
+            [
+                imports.ImportVar(
+                    package=self.__fields__["library"].default,
+                    tag="extendTheme",
+                    is_default=False,
+                ),
+                imports.ImportVar(
+                    package="/utils/theme.js",
+                    tag="theme",
+                    is_default=True,
+                ),
+            ],
         )
         return _imports
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import typing
 from abc import ABC, abstractmethod
 from functools import lru_cache, wraps
@@ -95,11 +96,11 @@ class BaseComponent(Base, ABC):
         """
 
     @abstractmethod
-    def _get_all_imports(self) -> imports.ImportDict:
+    def _get_all_imports(self) -> imports.ImportList:
         """Get all the libraries and fields that are used by the component.
 
         Returns:
-            The import dict with the required imports.
+            The list of all required ImportVar.
         """
 
     @abstractmethod
@@ -994,17 +995,22 @@ class Component(BaseComponent, ABC):
         # Return the dynamic imports
         return dynamic_imports
 
-    def _get_props_imports(self) -> List[str]:
+    def _get_props_imports(self) -> imports.ImportList:
         """Get the imports needed for components props.
 
         Returns:
-            The  imports for the components props of the component.
+            The imports for the components props of the component.
         """
-        return [
-            getattr(self, prop)._get_all_imports()
-            for prop in self.get_component_props()
-            if getattr(self, prop) is not None
-        ]
+        return imports.ImportList(
+            sum(
+                (
+                    getattr(self, prop)._get_all_imports()
+                    for prop in self.get_component_props()
+                    if getattr(self, prop) is not None
+                ),
+                [],
+            )
+        )
 
     def _should_transpile(self, dep: str | None) -> bool:
         """Check if a dependency should be transpiled.
@@ -1020,97 +1026,133 @@ class Component(BaseComponent, ABC):
             or format.format_library_name(dep or "") in self.transpile_packages
         )
 
-    def _get_dependencies_imports(self) -> imports.ImportDict:
+    def _get_dependencies_imports(self) -> List[ImportVar]:
         """Get the imports from lib_dependencies for installing.
 
         Returns:
             The dependencies imports of the component.
         """
-        return {
-            dep: [
-                ImportVar(
-                    tag=None,
-                    render=False,
-                    transpile=self._should_transpile(dep),
-                )
-            ]
+        return imports.ImportList(
+            ImportVar(
+                package=dep,
+                tag=None,
+                render=False,
+                transpile=self._should_transpile(dep),
+            )
             for dep in self.lib_dependencies
-        }
+        )
 
-    def _get_hooks_imports(self) -> imports.ImportDict:
+    def _get_hooks_imports(self) -> imports.ImportList:
         """Get the imports required by certain hooks.
 
         Returns:
             The imports required for all selected hooks.
         """
-        _imports = {}
+        _imports = imports.ImportList()
 
         if self._get_ref_hook():
             # Handle hooks needed for attaching react refs to DOM nodes.
-            _imports.setdefault("react", set()).add(ImportVar(tag="useRef"))
-            _imports.setdefault(f"/{Dirs.STATE_PATH}", set()).add(ImportVar(tag="refs"))
+            _imports.extend(
+                [
+                    ImportVar(package="react", tag="useRef"),
+                    ImportVar(package=f"/{Dirs.STATE_PATH}", tag="refs"),
+                ]
+            )
 
         if self._get_mount_lifecycle_hook():
             # Handle hooks for `on_mount` / `on_unmount`.
-            _imports.setdefault("react", set()).add(ImportVar(tag="useEffect"))
+            _imports.append(ImportVar(package="react", tag="useEffect"))
 
         if self._get_special_hooks():
             # Handle additional internal hooks (autofocus, etc).
-            _imports.setdefault("react", set()).update(
-                {
-                    ImportVar(tag="useRef"),
-                    ImportVar(tag="useEffect"),
-                },
+            _imports.extend(
+                [
+                    ImportVar(package="react", tag="useEffect"),
+                    ImportVar(package="react", tag="useRef"),
+                ]
             )
 
         user_hooks = self._get_hooks()
-        if user_hooks is not None and isinstance(user_hooks, Var):
-            _imports = imports.merge_imports(_imports, user_hooks._var_data.imports)  # type: ignore
+        if (
+            user_hooks is not None
+            and isinstance(user_hooks, Var)
+            and user_hooks._var_data is not None
+        ):
+            _imports.extend(user_hooks._var_data.imports)
 
         return _imports
 
     def _get_imports(self) -> imports.ImportDict:
-        """Get all the libraries and fields that are used by the component.
+        """Deprecated method to get all the libraries and fields used by the component.
 
         Returns:
             The imports needed by the component.
         """
-        _imports = {}
+        return {}
+
+    def _get_imports_list(self) -> List[ImportVar]:
+        """Internal method to get the imports as a list.
+
+        Returns:
+            The imports as a list.
+        """
+        _imports = imports.ImportList(
+            itertools.chain(
+                self._get_props_imports(),
+                self._get_dependencies_imports(),
+                self._get_hooks_imports(),
+            )
+        )
+
+        # Handle deprecated _get_imports
+        import_dict = self._get_imports()
+        if import_dict:
+            console.deprecate(
+                feature_name="_get_imports",
+                reason="use add_imports instead",
+                deprecation_version="0.5.0",
+                removal_version="0.6.0",
+            )
+            _imports.extend(imports.ImportList.from_import_dict(import_dict))
 
         # Import this component's tag from the main library.
         if self.library is not None and self.tag is not None:
-            _imports[self.library] = {self.import_var}
+            _imports.append(self.import_var)
 
         # Get static imports required for event processing.
-        event_imports = Imports.EVENTS if self.event_triggers else {}
+        if self.event_triggers:
+            _imports.extend(Imports.EVENTS)
 
         # Collect imports from Vars used directly by this component.
-        var_imports = [
-            var._var_data.imports for var in self._get_vars() if var._var_data
-        ]
+        for var in self._get_vars():
+            if var._var_data:
+                _imports.extend(var._var_data.imports)
+        return _imports
 
-        return imports.merge_imports(
-            *self._get_props_imports(),
-            self._get_dependencies_imports(),
-            self._get_hooks_imports(),
-            _imports,
-            event_imports,
-            *var_imports,
-        )
-
-    def _get_all_imports(self, collapse: bool = False) -> imports.ImportDict:
+    def _get_all_imports(self, collapse: bool = False) -> imports.ImportList:
         """Get all the libraries and fields that are used by the component and its children.
 
         Args:
-            collapse: Whether to collapse the imports by removing duplicates.
+            collapse: Whether to collapse the imports into a dict (deprecated).
 
         Returns:
-            The import dict with the required imports.
+            The list of all required imports.
         """
-        _imports = imports.merge_imports(
-            self._get_imports(), *[child._get_all_imports() for child in self.children]
+        _imports = imports.ImportList(
+            self._get_imports_list()
+            + sum((child._get_all_imports() for child in self.children), [])
         )
-        return imports.collapse_imports(_imports) if collapse else _imports
+
+        if collapse:
+            console.deprecate(
+                feature_name="collapse kwarg to _get_all_imports",
+                reason="use ImportList.collapse instead",
+                deprecation_version="0.5.0",
+                removal_version="0.6.0",
+            )
+            return _imports.collapse()  # type: ignore
+
+        return _imports
 
     def _get_mount_lifecycle_hook(self) -> str | None:
         """Generate the component lifecycle hook.
@@ -1296,6 +1338,7 @@ class Component(BaseComponent, ABC):
         tag = self.tag.partition(".")[0] if self.tag else None
         alias = self.alias.partition(".")[0] if self.alias else None
         return ImportVar(
+            package=self.library,
             tag=tag,
             is_default=self.is_default,
             alias=alias,
@@ -1550,33 +1593,29 @@ memo = custom_component
 class NoSSRComponent(Component):
     """A dynamic component that is not rendered on the server."""
 
-    def _get_imports(self) -> imports.ImportDict:
+    def _get_imports_list(self) -> list[ImportVar]:
         """Get the imports for the component.
 
         Returns:
             The imports for dynamically importing the component at module load time.
         """
-        # Next.js dynamic import mechanism.
-        dynamic_import = {"next/dynamic": [ImportVar(tag="dynamic", is_default=True)]}
+        return [
+            *super()._get_imports_list(),
+            # Next.js dynamic import mechanism.
+            ImportVar(package="next/dynamic", tag="dynamic", is_default=True),
+        ]
 
-        # The normal imports for this component.
-        _imports = super()._get_imports()
+    @property
+    def import_var(self) -> ImportVar:
+        """Will not actually render the tag to import, get it dynamically instead.
 
-        # Do NOT import the main library/tag statically.
-        if self.library is not None:
-            _imports[self.library] = [
-                imports.ImportVar(
-                    tag=None,
-                    render=False,
-                    transpile=self._should_transpile(self.library),
-                ),
-            ]
-
-        return imports.merge_imports(
-            dynamic_import,
-            _imports,
-            self._get_dependencies_imports(),
-        )
+        Returns:
+            An import var.
+        """
+        imp = super().import_var
+        imp.tag = None
+        imp.render = False
+        return imp
 
     def _get_dynamic_imports(self) -> str:
         opts_fragment = ", { ssr: false });"
@@ -1893,18 +1932,21 @@ class StatefulComponent(BaseComponent):
         """
         return {}
 
-    def _get_all_imports(self) -> imports.ImportDict:
+    def _get_all_imports(self) -> imports.ImportList:
         """Get all the libraries and fields that are used by the component.
 
         Returns:
-            The import dict with the required imports.
+            The list of all required imports.
         """
         if self.rendered_as_shared:
-            return {
-                f"/{Dirs.UTILS}/{PageNames.STATEFUL_COMPONENTS}": [
-                    ImportVar(tag=self.tag)
+            return imports.ImportList(
+                [
+                    imports.ImportVar(
+                        package=f"/{Dirs.UTILS}/{PageNames.STATEFUL_COMPONENTS}",
+                        tag=self.tag,
+                    )
                 ]
-            }
+            )
         return self.component._get_all_imports()
 
     def _get_all_dynamic_imports(self) -> set[str]:

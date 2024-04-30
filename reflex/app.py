@@ -79,7 +79,7 @@ from reflex.state import (
 )
 from reflex.utils import console, exceptions, format, prerequisites, types
 from reflex.utils.exec import is_testing_env, should_skip_compile
-from reflex.utils.imports import ImportVar
+from reflex.utils.imports import ImportList, split_library_name_version
 
 # Define custom types.
 ComponentCallable = Callable[[], Component]
@@ -625,27 +625,17 @@ class App(Base):
 
             admin.mount_to(self.api)
 
-    def get_frontend_packages(self, imports: Dict[str, set[ImportVar]]):
+    def get_frontend_packages(self, imports: ImportList):
         """Gets the frontend packages to be installed and filters out the unnecessary ones.
 
         Args:
-            imports: A dictionary containing the imports used in the current page.
+            imports: A list containing the imports used in the current page.
 
         Example:
             >>> get_frontend_packages({"react": "16.14.0", "react-dom": "16.14.0"})
         """
-        page_imports = {
-            i
-            for i, tags in imports.items()
-            if i
-            not in [
-                *constants.PackageJson.DEPENDENCIES.keys(),
-                *constants.PackageJson.DEV_DEPENDENCIES.keys(),
-            ]
-            and not any(i.startswith(prefix) for prefix in ["/", ".", "next/"])
-            and i != ""
-            and any(tag.install for tag in tags)
-        }
+        page_imports = ImportList(i for i in imports if i.install and i.package)
+        inferred_libraries = [i.library for i in page_imports]
         frontend_packages = get_config().frontend_packages
         _frontend_packages = []
         for package in frontend_packages:
@@ -654,14 +644,21 @@ class App(Base):
                     f"Tailwind packages are inferred from 'plugins', remove `{package}` from `frontend_packages`"
                 )
                 continue
-            if package in page_imports:
+            lib, version = split_library_name_version(package)
+            if (
+                lib in inferred_libraries
+                and version is None
+                or version == page_imports[inferred_libraries.index(lib)].version
+            ):
                 console.warn(
                     f"React packages and their dependencies are inferred from Component.library and Component.lib_dependencies, remove `{package}` from `frontend_packages`"
                 )
                 continue
             _frontend_packages.append(package)
-        page_imports.update(_frontend_packages)
-        prerequisites.install_frontend_packages(page_imports, get_config())
+        page_imports.extend(_frontend_packages)
+        prerequisites.install_frontend_packages(
+            set(page_imports.collapse()), get_config()
+        )
 
     def _app_root(self, app_wrappers: dict[tuple[int, str], Component]) -> Component:
         for component in tuple(app_wrappers.values()):
@@ -801,7 +798,7 @@ class App(Base):
         self.style = evaluate_style_namespaces(self.style)
 
         # Track imports and custom components found.
-        all_imports = {}
+        all_imports = ImportList()
         custom_components = set()
 
         for _route, component in self.pages.items():
@@ -811,7 +808,7 @@ class App(Base):
             component.apply_theme(self.theme)
 
             # Add component._get_all_imports() to all_imports.
-            all_imports.update(component._get_all_imports())
+            all_imports.extend(component._get_all_imports())
 
             # Add the app wrappers from this component.
             app_wrappers.update(component._get_all_app_wrap_components())
@@ -939,10 +936,10 @@ class App(Base):
                 custom_components_imports,
             ) = custom_components_future.result()
             compile_results.append(custom_components_result)
-            all_imports.update(custom_components_imports)
+            all_imports.extend(custom_components_imports)
 
         # Get imports from AppWrap components.
-        all_imports.update(app_root._get_all_imports())
+        all_imports.extend(app_root._get_all_imports())
 
         progress.advance(task)
 
@@ -958,7 +955,7 @@ class App(Base):
         # Setup the next.config.js
         transpile_packages = [
             package
-            for package, import_vars in all_imports.items()
+            for package, import_vars in all_imports.collapse().items()
             if any(import_var.transpile for import_var in import_vars)
         ]
         prerequisites.update_next_config(
