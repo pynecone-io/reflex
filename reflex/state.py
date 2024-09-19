@@ -12,6 +12,7 @@ import os
 import uuid
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from types import FunctionType, MethodType
 from typing import (
@@ -27,8 +28,10 @@ from typing import (
     Set,
     Tuple,
     Type,
+    TypeVar,
     Union,
     cast,
+    overload,
 )
 
 import dill
@@ -71,6 +74,7 @@ from reflex.utils.exceptions import (
     LockExpiredError,
 )
 from reflex.utils.exec import is_testing_env
+from reflex.utils.format import remove_prefix
 from reflex.utils.serializers import SerializedType, serialize, serializer
 from reflex.utils.types import override
 from reflex.vars import VarData
@@ -334,6 +338,9 @@ class EventHandlerSetVar(EventHandler):
                     f"Variable `{args[0]}` cannot be set on `{self.state_cls.get_full_name()}`"
                 )
         return super().__call__(*args)
+
+
+S = TypeVar("S", bound="BaseState")
 
 
 class BaseState(Base, ABC, extra=pydantic.Extra.allow):
@@ -1266,11 +1273,17 @@ class BaseState(Base, ABC, extra=pydantic.Extra.allow):
         for substate in self.substates.values():
             substate._reset_client_storage()
 
-    def get_substate(self, path: Sequence[str]) -> BaseState:
+    @overload
+    def get_substate(self, path: Sequence[str]) -> BaseState: ...
+
+    @overload
+    def get_substate(self, path: Type[S]) -> S: ...
+
+    def get_substate(self, path: Sequence[str] | Type[S]) -> BaseState | S:
         """Get the substate.
 
         Args:
-            path: The path to the substate.
+            path: The path to the substate or the class of the substate.
 
         Returns:
             The substate.
@@ -1278,6 +1291,10 @@ class BaseState(Base, ABC, extra=pydantic.Extra.allow):
         Raises:
             ValueError: If the substate is not found.
         """
+        if isinstance(path, type):
+            path = remove_prefix(
+                text=path.get_full_name(), prefix=f"{self.get_full_name()}."
+            ).split(".")
         if len(path) == 0:
             return self
         if path[0] == self.get_name():
@@ -1418,7 +1435,7 @@ class BaseState(Base, ABC, extra=pydantic.Extra.allow):
             The instance of state_cls associated with this state's client_token.
         """
         root_state = self._get_root_state()
-        return root_state.get_substate(state_cls.get_full_name().split("."))
+        return root_state.get_substate(state_cls)
 
     async def _get_state_from_redis(self, state_cls: Type[BaseState]) -> BaseState:
         """Get a state instance from redis.
@@ -1588,7 +1605,7 @@ class BaseState(Base, ABC, extra=pydantic.Extra.allow):
         except Exception as ex:
             state._clean()
 
-            app_instance = getattr(prerequisites.get_app(), constants.CompileVars.APP)
+            app_instance = prerequisites.get_app()
 
             event_specs = app_instance.backend_exception_handler(ex)
 
@@ -1662,7 +1679,7 @@ class BaseState(Base, ABC, extra=pydantic.Extra.allow):
         except Exception as ex:
             telemetry.send_error(ex, context="backend")
 
-            app_instance = getattr(prerequisites.get_app(), constants.CompileVars.APP)
+            app_instance = prerequisites.get_app()
 
             event_specs = app_instance.backend_exception_handler(ex)
 
@@ -1985,7 +2002,7 @@ class FrontendEventExceptionState(State):
             stack: The stack trace of the exception.
 
         """
-        app_instance = getattr(prerequisites.get_app(), constants.CompileVars.APP)
+        app_instance = prerequisites.get_app()
         app_instance.frontend_exception_handler(Exception(stack))
 
 
@@ -2024,7 +2041,7 @@ class OnLoadInternalState(State):
             The list of events to queue for on load handling.
         """
         # Do not app._compile()!  It should be already compiled by now.
-        app = getattr(prerequisites.get_app(), constants.CompileVars.APP)
+        app = prerequisites.get_app()
         load_events = app.get_load_events(self.router.page.path)
         if not load_events:
             self.is_hydrated = True
@@ -2167,7 +2184,7 @@ class StateProxy(wrapt.ObjectProxy):
         """
         super().__init__(state_instance)
         # compile is not relevant to backend logic
-        self._self_app = getattr(prerequisites.get_app(), constants.CompileVars.APP)
+        self._self_app = prerequisites.get_app()
         self._self_substate_path = tuple(state_instance.get_full_name().split("."))
         self._self_actx = None
         self._self_mutable = False
@@ -2483,6 +2500,20 @@ class StateManager(Base, ABC):
         """
         yield self.state()
 
+    @abstractmethod
+    def iter_state_tokens(
+        self, substate_cls: Type[BaseState] | None = None
+    ) -> AsyncIterator[str]:
+        """Iterate over the state names.
+
+        Args:
+            substate_cls: The subclass of BaseState to filter by.
+
+        Raises:
+            NotImplementedError: Always, because this method must be implemented by subclasses.
+        """
+        raise NotImplementedError
+
 
 class StateManagerMemory(StateManager):
     """A state manager that stores states in memory."""
@@ -2551,6 +2582,21 @@ class StateManagerMemory(StateManager):
             state = await self.get_state(token)
             yield state
             await self.set_state(token, state)
+
+    @override
+    async def iter_state_tokens(
+        self, substate_cls: Type[BaseState] | None = None
+    ) -> AsyncIterator[str]:
+        """Iterate over the state names.
+
+        Args:
+            substate_cls: The subclass of BaseState to filter by.
+
+        Yields:
+            The state names.
+        """
+        for token in self.states:
+            yield token
 
 
 def _default_token_expiration() -> int:
@@ -2663,15 +2709,21 @@ class StateManagerDisk(StateManager):
         """
         return prerequisites.get_web_dir() / constants.Dirs.STATES
 
+    def _iter_pkl_files(self) -> Iterator[Path]:
+        """Iterate over the pkl files in the states directory.
+
+        Yields:
+            The pkl files.
+        """
+        for path in path_ops.ls(self.states_directory):
+            if path.suffix == ".pkl":
+                yield path
+
     def _purge_expired_states(self):
         """Purge expired states from the disk."""
         import time
 
-        for path in path_ops.ls(self.states_directory):
-            # check path is a pickle file
-            if path.suffix != ".pkl":
-                continue
-
+        for path in self._iter_pkl_files():
             # load last edited field from file
             last_edited = path.stat().st_mtime
 
@@ -2811,6 +2863,24 @@ class StateManagerDisk(StateManager):
             state = await self.get_state(token)
             yield state
             await self.set_state(token, state)
+
+    @override
+    async def iter_state_tokens(
+        self, substate_cls: Type[BaseState] | None = None
+    ) -> AsyncIterator[str]:
+        """Iterate over the state names.
+
+        Args:
+            substate_cls: The subclass of BaseState to filter by.
+
+        Yields:
+            The state names.
+        """
+        for path in self._iter_pkl_files():
+            token = path.stem
+            if substate_cls is not None and not token.endswith(substate_cls.get_name()):
+                continue
+            yield token
 
 
 # Workaround https://github.com/cloudpipe/cloudpickle/issues/408 for dynamic pydantic classes
@@ -3111,6 +3181,25 @@ class StateManagerRedis(StateManager):
             yield state
             await self.set_state(token, state, lock_id)
 
+    @override
+    async def iter_state_tokens(
+        self, substate_cls: Type[BaseState] | None = None
+    ) -> AsyncIterator[str]:
+        """Iterate over the state names.
+
+        Args:
+            substate_cls: The subclass of BaseState to filter by.
+
+        Yields:
+            The state names.
+        """
+        if substate_cls is None:
+            substate_cls = self.state
+        async for token in self.redis.scan_iter(
+            match=f"*_{substate_cls.get_name()}", _type="STRING"
+        ):
+            yield token.decode()
+
     @staticmethod
     def _lock_key(token: str) -> bytes:
         """Get the redis key for a token's lock.
@@ -3236,7 +3325,7 @@ def get_state_manager() -> StateManager:
     Returns:
         The state manager.
     """
-    app = getattr(prerequisites.get_app(), constants.CompileVars.APP)
+    app = prerequisites.get_app()
     return app.state_manager
 
 

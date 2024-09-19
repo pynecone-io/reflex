@@ -27,9 +27,11 @@ from typing import (
     Optional,
     Set,
     Type,
+    TypeVar,
     Union,
     get_args,
     get_type_hints,
+    overload,
 )
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -1101,6 +1103,44 @@ class App(MiddlewareMixin, LifespanMixin, Base):
                     update=StateUpdate(delta=delta),
                     sid=state.router.session.session_id,
                 )
+
+    S = TypeVar("S", bound=BaseState)
+
+    @overload
+    async def modify_states(
+        self, substate_cls: Type[S], from_state: None
+    ) -> AsyncIterator[S]: ...
+
+    @overload
+    async def modify_states(
+        self, substate_cls: None, from_state: BaseState
+    ) -> AsyncIterator[BaseState]: ...
+
+    async def modify_states(
+        self,
+        substate_cls: Type[S] | Type[BaseState] | None = None,
+        from_state: BaseState | None = None,
+    ) -> AsyncIterator[S] | AsyncIterator[BaseState]:
+        """Iterate over the states.
+
+        Args:
+            substate_cls: The substate class to iterate over.
+            from_state: The state from which this method is called.
+
+        Yields:
+            The states to modify.
+        """
+        async for token in self.state_manager.iter_state_tokens():
+            # avoid deadlock when calling from event handler/background task
+            if from_state is not None and token.startswith(
+                from_state.router.session.client_token
+            ):
+                state = from_state
+                continue
+            async with self.modify_state(token) as state:
+                if substate_cls is not None:
+                    state = state.get_substate(substate_cls)
+                yield state
 
     def _process_background(
         self, state: BaseState, event: Event
