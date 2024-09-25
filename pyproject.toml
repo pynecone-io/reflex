@@ -26,6 +26,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
+
 python = "^3.9"
 dill = ">=0.3.8,<0.4"
 fastapi = ">=0.96.0,!=0.111.0,!=0.111.1"
@@ -45,10 +46,7 @@ alembic = ">=1.11.1,<2.0"
 platformdirs = ">=3.10.0,<5.0"
 distro = {version = ">=1.8.0,<2.0", platform = "linux"}
 python-engineio = "!=4.6.0"
-wrapt = [
-    {version = ">=1.14.0,<2.0", python = ">=3.11"},
-    {version = ">=1.11.0,<2.0", python = "<3.11"},
-]
+wrapt = "^1.16.0"
 packaging = ">=23.1,<25.0"
 reflex-hosting-cli = ">=0.1.2,<2.0"
 charset-normalizer = ">=3.3.2,<4.0"
@@ -59,7 +57,12 @@ httpx = ">=0.25.1,<1.0"
 twine = ">=4.0.0,<6.0"
 tomlkit = ">=0.12.4,<1.0"
 lazy_loader = ">=0.4"
+<<<<<<< HEAD
 reflex-chakra = ">=0.6.0a6"
+=======
+reflex-chakra = ">=0.6.0a"
+numpy = "^2.1.1"
+>>>>>>> 82170220 (modifypoetry lock and pyproject)
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.1.2,<8.0"
