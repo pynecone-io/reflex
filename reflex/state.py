@@ -43,7 +43,7 @@ from sqlalchemy.orm import DeclarativeBase
 from typing_extensions import Self
 
 from reflex import event
-from reflex.config import PerformanceMode, get_config
+from reflex.config import EnvironmentVariables, PerformanceMode, get_config
 from reflex.istate.data import RouterData
 from reflex.istate.storage import ClientStorageBase
 from reflex.model import Model
@@ -3155,6 +3155,25 @@ def _default_lock_expiration() -> int:
     return get_config().redis_lock_expiration
 
 
+TOKEN_TYPE = TypeVar("TOKEN_TYPE", str, bytes)
+
+
+@functools.lru_cache
+def prefix_redis_token_str(token: str) -> str:
+    """Prefix the token with the redis prefix.
+
+    Args:
+        token: The token to prefix.
+
+    Returns:
+        The prefixed token.
+    """
+    prefix = EnvironmentVariables.REFLEX_REDIS_PREFIX.get()
+    if not prefix:
+        return token
+    return f"{prefix}{token}"
+
+
 class StateManagerRedis(StateManager):
     """A state manager that stores states in redis."""
 
@@ -3292,7 +3311,7 @@ class StateManagerRedis(StateManager):
         state = None
 
         # Fetch the serialized substate from redis.
-        redis_state = await self.redis.get(token)
+        redis_state = await self.redis.get(prefix_redis_token_str(token))
 
         if redis_state is not None:
             # Deserialize the substate.
@@ -3378,7 +3397,7 @@ class StateManagerRedis(StateManager):
             pickle_state = state._serialize()
             if pickle_state:
                 await self.redis.set(
-                    _substate_key(client_token, state),
+                    prefix_redis_token_str(_substate_key(client_token, state)),
                     pickle_state,
                     ex=self.token_expiration,
                 )
@@ -3415,7 +3434,7 @@ class StateManagerRedis(StateManager):
         """
         # All substates share the same lock domain, so ignore any substate path suffix.
         client_token = _split_substate_key(token)[0]
-        return f"{client_token}_lock".encode()
+        return prefix_redis_token_str(f"{client_token}_lock").encode()
 
     async def _try_get_lock(self, lock_key: bytes, lock_id: bytes) -> bool | None:
         """Try to get a redis lock for a token.

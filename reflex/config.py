@@ -564,6 +564,9 @@ class EnvironmentVariables:
     # The maximum size of the reflex state in kilobytes.
     REFLEX_STATE_SIZE_LIMIT: EnvVar[int] = env_var(1000)
 
+    # Optional redis key prefix for the state manager.
+    REFLEX_REDIS_PREFIX: EnvVar[Optional[str]] = env_var(None)
+
 
 environment = EnvironmentVariables()
 
