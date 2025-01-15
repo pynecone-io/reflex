@@ -15,6 +15,8 @@ import multiprocessing
 import platform
 import sys
 import traceback
+import urllib.parse
+import uuid
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1523,14 +1525,15 @@ class EventNamespace(AsyncNamespace):
         self.sid_to_token = {}
         self.app = app
 
-    def on_connect(self, sid, environ):
+    async def on_connect(self, sid, environ):
         """Event for when the websocket is connected.
 
         Args:
             sid: The Socket.IO session id.
             environ: The request information, including HTTP headers.
         """
-        pass
+        query_params = urllib.parse.parse_qs(environ.get("QUERY_STRING"))
+        await self.link_token_to_sid(sid, query_params.get("token", [])[0])
 
     def on_disconnect(self, sid):
         """Event for when the websocket disconnects.
@@ -1568,9 +1571,6 @@ class EventNamespace(AsyncNamespace):
         # Get the event.
         event = Event(**{k: v for k, v in fields.items() if k in _EVENT_FIELDS})
 
-        self.token_to_sid[event.token] = sid
-        self.sid_to_token[sid] = event.token
-
         # Get the event environment.
         if self.app.sio is None:
             raise RuntimeError("Socket.IO is not initialized.")
@@ -1603,3 +1603,17 @@ class EventNamespace(AsyncNamespace):
         """
         # Emit the test event.
         await self.emit(str(constants.SocketEvent.PING), "pong", to=sid)
+
+    async def link_token_to_sid(self, sid: str, token: str):
+        """Link a token to a session id.
+
+        Args:
+            sid: The Socket.IO session id.
+            token: The client token.
+        """
+        if token in self.sid_to_token.values() and sid != self.token_to_sid.get(token):
+            token = str(uuid.uuid4())
+            await self.emit("new_token", token, to=sid)
+
+        self.token_to_sid[token] = sid
+        self.sid_to_token[sid] = token
