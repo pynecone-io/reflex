@@ -1580,7 +1580,7 @@ class EventNamespace(AsyncNamespace):
         self.sid_to_token = {}
         self.app = app
 
-    def on_connect(self, sid, environ):
+    async def on_connect(self, sid, environ):
         """Event for when the websocket is connected.
 
         Args:
@@ -1593,7 +1593,7 @@ class EventNamespace(AsyncNamespace):
                 f"Frontend version {subprotocol} for session {sid} does not match the backend version {constants.Reflex.VERSION}."
             )
 
-    def on_disconnect(self, sid):
+    async def on_disconnect(self, sid):
         """Event for when the websocket disconnects.
 
         Args:
@@ -1602,6 +1602,7 @@ class EventNamespace(AsyncNamespace):
         disconnect_token = self.sid_to_token.pop(sid, None)
         if disconnect_token:
             self.token_to_sid.pop(disconnect_token, None)
+        await self.app.state_manager.disconnect(sid)
 
     async def emit_update(self, update: StateUpdate, sid: str) -> None:
         """Emit an update to the client.
