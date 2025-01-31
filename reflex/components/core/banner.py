@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from reflex import constants
+from reflex.components.base.fragment import Fragment
 from reflex.components.component import Component
 from reflex.components.core.cond import cond
 from reflex.components.datadisplay.logo import svg_logo
@@ -164,7 +165,7 @@ class ConnectionToaster(Toaster):
         return super().create(*children, **props)
 
 
-class ConnectionBanner(Component):
+class ConnectionBanner(Fragment):
     """A connection banner component."""
 
     @classmethod
@@ -191,10 +192,10 @@ class ConnectionBanner(Component):
                 position="fixed",
             )
 
-        return cond(has_connection_errors, comp)
+        return super().create(cond(has_connection_errors, comp))
 
 
-class ConnectionModal(Component):
+class ConnectionModal(Fragment):
     """A connection status modal window."""
 
     @classmethod
@@ -209,16 +210,18 @@ class ConnectionModal(Component):
         """
         if not comp:
             comp = Text.create(*default_connection_error())
-        return cond(
-            has_too_many_connection_errors,
-            DialogRoot.create(
-                DialogContent.create(
-                    DialogTitle.create("Connection Error"),
-                    comp,
+        return super().create(
+            cond(
+                has_too_many_connection_errors,
+                DialogRoot.create(
+                    DialogContent.create(
+                        DialogTitle.create("Connection Error"),
+                        comp,
+                    ),
+                    open=has_too_many_connection_errors,
+                    z_index=9999,
                 ),
-                open=has_too_many_connection_errors,
-                z_index=9999,
-            ),
+            )
         )
 
 

@@ -264,7 +264,7 @@ def get_reload_dirs() -> list[Path]:
                 break
 
         reload_dirs = [module_path]
-    return reload_dirs
+    return list(map(Path.absolute, reload_dirs))
 
 
 def run_uvicorn_backend(host: str, port: int, loglevel: LogLevel):
