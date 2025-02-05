@@ -210,7 +210,7 @@ jobs:
           poetry run bash scripts/integration.sh ./rx-shout-from-template prod
 
   reflex-web-macos:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -242,6 +242,9 @@ jobs:
         run: |
           # Check that npm is home
           npm -v
+          ulimit -a
+          ulimit -n 32768
+          ulimit -a
           poetry run bash scripts/integration.sh ./reflex-web prod
       - name: Measure and upload .web size
         run:
